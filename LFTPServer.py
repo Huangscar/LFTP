@@ -3,14 +3,20 @@ import socket
 import os
 import struct
 import threading
+import random
+
 BUF_SIZE = 1500
 FILE_BUF_SIZE = 1024
 SERVER_PORT = 12000
 SERVER_FOLDER = 'ServerFiles/'
-WINDOW_SIZE = 1000
+WINDOW_SIZE = 5
 threadLock = threading.Lock()
 
 buffer_receive = []
+
+rand_drop = []
+
+rand_timeout = []
 
 # 传输文件时的数据包格式(序列号，确认号，文件结束标志，1024B的数据)
 # pkt_value = (int seq, int ack, int end_flag 1024B的byte类型 data)
@@ -120,6 +126,7 @@ def lget(server_socket, client_address, large_file_name):
         except socket.timeout as e:
             pkt_count = pkt_count
         except ConnectionResetError as e:
+            print(e)
             break
         '''
         data = file_to_send.read(FILE_BUF_SIZE)
@@ -164,8 +171,64 @@ def listen_package(server_socket, ack_type):
                 print(e)
                 break
 
+def store_file(file_to_recv, server_socket, client_address, pid):
+    need_ack = 0
+    while True:
 
-# 接收到lsend命令，客户端向服务端发送文件
+        try:
+            data_ = buffer_receive[0]
+        except IndexError as e:
+            continue
+        try:
+            unpacked_data = pkt_struct.unpack(data_)
+        except:
+            print(str(data_.decode('utf-8')))
+            buffer_receive.remove(data_)
+            continue
+        seq_num = unpacked_data[0]
+        ack_num = unpacked_data[1]
+        end_flag = unpacked_data[2]
+        data = unpacked_data[3]
+        if ack_num == int(pid):
+            buffer_receive.remove(data_)
+            # print(seq_num)
+            if seq_num == need_ack:
+                if end_flag != 1:
+                    file_to_recv.write(data)
+                    need_ack += 1
+                    print("pid")
+                    print(pid)
+                    print(need_ack)
+                    server_socket.sendto(pkt_struct.pack(*(pid, need_ack, 0, 'ack'.encode('utf-8'))), client_address)
+                else:
+                    need_ack += 1
+                    server_socket.sendto(pkt_struct.pack(*(pid, need_ack, 0, 'ack'.encode('utf-8'))), client_address)
+                    new_list = buffer_receive.copy()
+                    print("seq")
+                    print(ack_num)
+                    print("end")
+                    for i in range(len(new_list)):
+                        data = new_list[i]
+                        try:
+                            unpacked_data = pkt_struct.unpack(data)
+                            if unpacked_data[0] == int(pid):
+                                buffer_receive.remove(data)
+                        except struct.error as e:
+                            continue
+                    break
+        #else:
+            #print(ack_num)
+            #try:
+            #    print(data.decode('utf-8'))
+            #except UnicodeDecodeError as e:
+            #    a = 1
+            #print(end_flag)
+            #print(seq_num)
+            #print(need_ack)
+
+
+
+                # 接收到lsend命令，客户端向服务端发送文件
 def lsend(server_socket, client_address, large_file_name):
     print('正在发送', large_file_name)
     # 创建文件。模式wb 以二进制格式打开一个文件只用于写入。如果该文件已存在则打开文件，
@@ -176,33 +239,59 @@ def lsend(server_socket, client_address, large_file_name):
 
     # 发送接收允许
     server_socket.sendto('接收允许'.encode('utf-8'), client_address)
-
     need_ack = 0
+    pid = threading.currentThread().ident
+    store_file_threading = threading.Thread(target=store_file, args=(file_to_recv, server_socket, client_address, pid))
+    store_file_threading.start()
+    package_num = 0
     # 开始接收数据包
     while True:
         # 用缓冲区接收数据包
 
 
-        package_num = 0
+
         while len(buffer_receive) <= WINDOW_SIZE:
+            server_socket.sendto(pkt_struct.pack(*(0, int(threading.currentThread().ident), 1, 'not full'.encode('utf-8'))), client_address)
+
             try:
                 # print(package_num)
                 packed_data_, client_address_ = server_socket.recvfrom(BUF_SIZE)
                 buffer_receive.append(packed_data_)
                 package_num += 1
             except Exception as e:
+                continue
+
+        server_socket.sendto(pkt_struct.pack(*(0, int(threading.currentThread().ident), 0, 'full'.encode('utf-8'))), client_address)
+
+        if not store_file_threading.isAlive():
+            print(threading.currentThread().ident)
+            print("not alive")
+            break
+        '''
+        package_num = 0
+
+        
+        while len(buffer_receive) <= WINDOW_SIZE:
+            try:
+
+                # print(package_num)
+                packed_data_, client_address_ = server_socket.recvfrom(BUF_SIZE)
+                buffer_receive.append(packed_data_)
+                package_num += 1
+                
+            except Exception as e:
                 # print(e)
                 break
 
         # 窗口满了，向发送端发送
-        if package_num != 0:
+        if package_num != 0 and len(buffer_receive) >= WINDOW_SIZE:
             # print("full")
             server_socket.sendto('isFull'.encode('utf-8'), client_address_)
 
         # 从list里读包，是这个进程的包就写进去，不是就不管
-        print("lock")
+
         threadLock.acquire()
-        print("store")
+
         i = 0
         while i < len(buffer_receive):
             data_ = buffer_receive[i]
@@ -224,10 +313,13 @@ def lsend(server_socket, client_address, large_file_name):
                         need_ack += 1
                     else:
                         break  # 结束标志为1,结束循环
+                else:
+                    i += 1
             else:
                 i += 1
         threadLock.release()
         if package_num != 0:
+            
             server_socket.sendto(str(need_ack).encode('utf-8'), client_address)
             # print(need_ack)
             if end_flag == 1:
@@ -236,11 +328,13 @@ def lsend(server_socket, client_address, large_file_name):
             server_socket.sendto(str(need_ack).encode('utf-8'), client_address)
         # print(len(buffer_receive))
         pkt_count += 1
+        
+        '''
 
     file_to_recv.close()
     # print(len(buffer_receive))
 
-    print('成功接收的数据包数量：' + str(need_ack+1))
+    print('成功接收的数据包数量：' + str(package_num+1))
 
 
 def serve_client(client_address, message):

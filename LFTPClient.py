@@ -9,20 +9,26 @@ BUF_SIZE = 1500
 FILE_BUF_SIZE = 1024
 SERVER_PORT = 12000
 CLIENT_FOLDER = 'ClientFiles/'   # 接收文件夹
-WINDOW_SIZE = 1000
+WINDOW_SIZE = 10
 wsnd = WINDOW_SIZE
 buffer_receive = []
 threading_lock = threading.Lock()
+cwnd = 1
+ssthreth = WINDOW_SIZE/2
+is_full = False
+pkt_count = 0
 
 # 传输文件时的数据包格式(序列号，确认号，文件结束标志，1024B的数据)
 # pkt_value = (int seq, int ack, int end_flag 1024B的byte类型 data)
 pkt_struct = struct.Struct('III1024s')
 
 
+
+
 def lsend(client_socket, server_address, large_file_name):
     print("LFTP lsend", server_address, large_file_name)
     # 发送数据包次数计数
-    pkt_count = 0
+
     # 模式rb 以二进制格式打开一个文件用于只读。文件指针将会放在文件的开头。
     file_to_send = open(CLIENT_FOLDER + large_file_name, 'rb')
 
@@ -40,22 +46,31 @@ def lsend(client_socket, server_address, large_file_name):
     print('来自', server_address, '的数据是: ', message.decode('utf-8'))
 
     print('正在发送', large_file_name)
+    repeat_ack = 0
     # 用缓冲区循环发送数据包
-
+    global cwnd
+    new_threading = threading.Thread(target=get_ack_func, args=(client_socket, 0))
+    new_threading.start()
+    global is_exit
+    is_exit = False
+    global exit_index
+    exit_index = 0
+    is_end = False
+    global pkt_count
+    pkt_count = 0
+    print(pid)
     while True:
         # data = file_to_send.read(FILE_BUF_SIZE)
-
+        # print(cwnd)
         send_package_num = 0
 
         #seq = pkt_count
         #ack = pkt_count
 
         # 将元组打包发送
-        global is_exit
-        is_exit = False
-        is_end = False
-        new_threading = threading.Thread(target=listen_package, args=(client_socket, 0))
-        new_threading.start()
+        threading_lock.acquire()
+        group = pkt_count
+        threading_lock.release()
         for i in range(WINDOW_SIZE):
 
             # print(is_full)
@@ -63,52 +78,55 @@ def lsend(client_socket, server_address, large_file_name):
                 # print(is_full)
                 # print(i)
                 break
+            if group+i >= len(data_group):
+                print(group)
+                return
 
-            if str(data_group[pkt_count+i]) != "b''":  # b''表示文件读完
+            if str(data_group[group+i]) != "b''":  # b''表示文件读完
                 end_flag = 0
-                client_socket.sendto(pkt_struct.pack(*(pkt_count+i, int(pid), end_flag, data_group[pkt_count+i])), server_address)
+                # print(pkt_count)
+                client_socket.sendto(pkt_struct.pack(*(group+i, int(pid), end_flag, data_group[group+i])), server_address)
                 send_package_num += 1
             else:
                 # print("end")
                 is_end = True
                 end_flag = 1  # 发送的结束标志为1，表示文件已发送完毕
-                client_socket.sendto(pkt_struct.pack(*(pkt_count+i, int(pid), end_flag, 'end'.encode('utf-8'))), server_address)
+                client_socket.sendto(pkt_struct.pack(*(group+i, int(pid), end_flag, 'end'.encode('utf-8'))), server_address)
                 threading_lock.acquire()
                 is_exit = True
+                exit_index = group+i
                 threading_lock.release()
+                # print("exit_index")
+                # print(exit_index)
                 # print("end")
                 # 等待ACK
-                try:
-                    new_threading.join()
-                    ack_data_, server_address = client_socket.recvfrom(BUF_SIZE)
-                    ack_num = int(ack_data_.decode('utf-8'))
-                    pkt_count = ack_num-1
-                    break
-                except socket.timeout as e:
-                    pkt_count = pkt_count+i
-                    break
-                except ConnectionResetError as e:
-                    break
+                break
 
         if is_end:
-            if pkt_count == len(data_group) - 1:
+            if pkt_count >= len(data_group) - 1:
+                new_threading.join()
                 break
             else:
+                if not new_threading.isAlive():
+                    break
+                is_end = False
                 continue
 
-        threading_lock.acquire()
-        is_exit = True
-        threading_lock.release()
-        new_threading.join()
 
         # 等待服务端ACK,这里只会发送一个ACK，收到的ACK的值为需要的部分的开始
-        try:
+        '''
+                try:
             ack_data_, server_address = client_socket.recvfrom(BUF_SIZE)
             while True:
                 get_data = str(ack_data_.decode('utf-8'))
                 if get_data.isdigit():
                     ack_num = int(get_data)
                     # print(ack_num)
+                    # 丢包，cwnd置为1，阈值置为原来的二分之一
+                    if ack_num-pkt_count < send_package_num:
+                        global ssthreth
+                        ssthreth = cwnd/2
+                        cwnd = 1
                     pkt_count = ack_num
                     break
                 else:
@@ -118,9 +136,45 @@ def lsend(client_socket, server_address, large_file_name):
         except socket.timeout as e:
             pkt_count = pkt_count
         except ConnectionResetError as e:
+            print(e)
             break
+        '''
+
     print(large_file_name, '发送完毕，发送数据包的数量：' + str(pkt_count))
 
+def get_ack_func(client_socket, a):
+    global pkt_count
+    global is_full
+    is_full = False
+    # print(is_full)
+    while True:
+        try:
+            ack_data_, server_address = client_socket.recvfrom(BUF_SIZE)
+            unpack_data = pkt_struct.unpack(ack_data_)
+            seq = unpack_data[0]
+            need_ack = unpack_data[1]
+            end_flag = unpack_data[2]
+            data = unpack_data[3]
+            if seq == 0 and need_ack == pid and end_flag == 0:
+                is_full = True
+            elif seq == 0 and need_ack == pid and end_flag == 1:
+                is_full = False
+            elif seq == int(pid):
+                print(need_ack)
+                threading_lock.acquire()
+                pkt_count = need_ack
+                threading_lock.release()
+            if is_exit and need_ack >= exit_index:
+                break
+        except socket.timeout as e:
+            threading_lock.acquire()
+            pkt_count = pkt_count
+            threading_lock.release()
+            print("time over")
+            continue
+        except ConnectionResetError as e:
+            print(e)
+            break
 
 def listen_package(client_socket, ack_type):
     global is_full
@@ -157,11 +211,13 @@ def lget(client_socket, server_address, large_file_name):
     client_socket.sendto('ACK'.encode('utf-8'), server_address)
     need_ack = 0
     print('正在接收', large_file_name)
+    print(pid)
     # 开始接收数据包
     while True:
         # 用缓冲区接收数据包
         package_num = 0
         while len(buffer_receive) <= WINDOW_SIZE:
+
             try:
                 # print(package_num)
                 packed_data_, server_address_ = client_socket.recvfrom(BUF_SIZE)
