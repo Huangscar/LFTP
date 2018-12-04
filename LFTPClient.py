@@ -17,12 +17,15 @@ cwnd = 1
 ssthreth = WINDOW_SIZE/2
 is_full = False
 pkt_count = 0
+<<<<<<< HEAD
 send_seq = 0
 threading_condition = threading.Condition
 is_drop = False
 drop_num = 0
 is_exit = False
 
+=======
+>>>>>>> c0aebd53c3fa1b225b938466da012f440cccef2d
 
 # 传输文件时的数据包格式(序列号，确认号，文件结束标志，1024B的数据)
 # pkt_value = (int seq, int ack, int end_flag 1024B的byte类型 data)

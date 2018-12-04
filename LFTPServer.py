@@ -18,6 +18,10 @@ rand_drop = []
 
 rand_timeout = []
 
+rand_drop = []
+
+rand_timeout = []
+
 # 传输文件时的数据包格式(序列号，确认号，文件结束标志，1024B的数据)
 # pkt_value = (int seq, int ack, int end_flag 1024B的byte类型 data)
 pkt_struct = struct.Struct('III1024s')
@@ -252,12 +256,15 @@ def lsend(server_socket, client_address, large_file_name):
     # 发送接收允许
     server_socket.sendto('接收允许'.encode('utf-8'), client_address)
     need_ack = 0
+<<<<<<< HEAD
     buffer_receive = []
     pid = threading.currentThread().ident
     store_file_threading = threading.Thread(target=store_file, args=(file_to_recv, server_socket, client_address, pid, buffer_receive))
     store_file_threading.start()
     package_num = 0
 
+
+>>>>>>> c0aebd53c3fa1b225b938466da012f440cccef2d
     # 开始接收数据包
     while True:
         # 用缓冲区接收数据包
